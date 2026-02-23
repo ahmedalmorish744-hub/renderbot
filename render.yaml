@@ -1,0 +1,14 @@
+services:
+  - type: worker
+    name: telegram-poster-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: API_ID
+        value: 33957094
+      - key: API_HASH
+        value: 35e04f65846f09700aac0696a59f1a37
+      - key: BOT_TOKEN
+        value: 8568132127:AAG-4Mxkj7WxpQcVwUcX6GdGHRAfEMjQs_8
