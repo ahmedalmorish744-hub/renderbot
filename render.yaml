@@ -3,7 +3,7 @@ services:
     name: telegram-poster-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python bot.py
     plan: free
     envVars:
       - key: API_ID
