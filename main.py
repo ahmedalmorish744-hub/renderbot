@@ -276,10 +276,13 @@ async def load_existing_sessions():
                 print(f"✅ تم تحميل الحساب: {phone}")
             except: pass
 
-def main():
+# --- التعديل المهم: إصلاح مشكلة event loop ---
+if __name__ == "__main__":
+    # تحميل البيانات
     load_data()
+    
+    # إنشاء event loop جديد
     try:
-        # إنشاء event loop جديد
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -296,6 +299,3 @@ def main():
         # إيقاف البوت بشكل نظيف
         loop.run_until_complete(app.stop())
         loop.close()
-
-if __name__ == "__main__":
-    main()  # بدون asyncio.run()
