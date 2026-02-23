@@ -1,4 +1,4 @@
-hereimport asyncio
+import asyncio
 import re
 import os
 import json
@@ -32,7 +32,8 @@ def load_data():
                 data = json.load(f)
                 MESSAGES.update(data.get('messages', {}))
                 SETTINGS.update(data.get('settings', SETTINGS))
-        except: pass
+        except:
+            pass
 
 def save_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -169,8 +170,10 @@ async def fast_poster():
                             await asyncio.sleep(SETTINGS['post_interval'])
                         except FloodWait as e:
                             await asyncio.sleep(e.value)
-                        except: pass
-            except: pass
+                        except:
+                            pass
+            except:
+                pass
         await asyncio.sleep(5)
 
 # --- تشغيل البوت ---
