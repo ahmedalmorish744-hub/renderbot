@@ -276,18 +276,26 @@ async def load_existing_sessions():
                 print(f"✅ تم تحميل الحساب: {phone}")
             except: pass
 
-async def main():
+def main():
     load_data()
-    await app.start()
-    await load_existing_sessions()
-    print("🚀 البوت المصلح يعمل الآن...")
     try:
-        while True:
-            await asyncio.sleep(60)
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        # إنشاء event loop جديد
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # تشغيل البوت
+        loop.run_until_complete(app.start())
+        loop.run_until_complete(load_existing_sessions())
+        print("🚀 البوت المصلح يعمل الآن...")
+        
+        # استمرار التشغيل
+        loop.run_forever()
+    except KeyboardInterrupt:
+        print("🛑 تم إيقاف البوت")
     finally:
-        await app.stop()
+        # إيقاف البوت بشكل نظيف
+        loop.run_until_complete(app.stop())
+        loop.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()  # بدون asyncio.run()
