@@ -3,8 +3,8 @@
 
 """
 ╔═══════════════════════════════════════════════════════════════╗
-║     🤖 بوت النشر الخارق - بدون قاعدة بيانات خارجية 🚀       ║
-║     يمكنك إضافة DATABASE_URL من إعدادات Render لاحقاً        ║
+║     🤖 بوت النشر الخارق - نسخة نظيفة بدون قفل 🚀            ║
+║     يدعم SQLite محلية + PostgreSQL خارجية (اختياري)         ║
 ╚═══════════════════════════════════════════════════════════════╝
 """
 
@@ -31,13 +31,12 @@ from threading import Thread
 
 # ==================== الإعدادات الأساسية ====================
 
-API_ID = int(os.environ.get('API_ID', 33957094))
-API_HASH = os.environ.get('API_HASH', "35e04f65846f09700aac0696a59f1a37")
-BOT_TOKEN = os.environ.get('BOT_TOKEN', "8617406497:AAGP7QysieblKVu_JOK8Tg9uXtb7pz7CkFA")
-ADMIN_ID = int(os.environ.get('ADMIN_ID', 7853478744))
+API_ID = int(os.environ.get('API_ID', 0))
+API_HASH = os.environ.get('API_HASH', "")
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "")
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 PORT = int(os.environ.get('PORT', 10000))
 
-# قاعدة بيانات خارجية (اختياري - أضف DATABASE_URL في Render)
 DATABASE_URL = os.environ.get('DATABASE_URL', None)
 
 # ==================== إعدادات التشغيل ====================
@@ -58,13 +57,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    uptime = str(datetime.now() - start_time) if 'start_time' in globals() else "جاري الحساب"
+    uptime_val = str(datetime.now() - start_time) if 'start_time' in globals() else "جاري الحساب"
     return jsonify({
         'status': 'online',
         'msg': '🤖 البوت يعمل بنجاح!',
         'time': str(datetime.now()),
         'db_type': 'PostgreSQL خارجية' if DATABASE_URL else 'SQLite محلية',
-        'version': '4.0.0'
+        'version': '5.0.0'
     })
 
 @app.route('/health')
@@ -72,7 +71,7 @@ def health():
     return jsonify({'status': 'healthy', 'port': PORT}), 200
 
 def run_web():
-    """تشغيل خادم الويب - يجب أن يبدأ بأسرع وقت"""
+    """تشغيل خادم الويب"""
     port = int(os.environ.get('PORT', 10000))
     print(f"🌐 [WEB] بدء تشغيل Flask على المنفذ {port}...")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
@@ -168,8 +167,6 @@ def encrypt_text(text):
 # ==================== قاعدة البيانات ====================
 
 class Database:
-    """نظام قاعدة بيانات موحد - يدعم SQLite و PostgreSQL"""
-    
     def __init__(self):
         self.db_type = 'postgres' if DATABASE_URL else 'sqlite'
         self.db_path = DB_PATH
@@ -177,12 +174,8 @@ class Database:
         
         if self.db_type == 'sqlite':
             self._init_sqlite()
-        else:
-            # سيتم تهيئة PostgreSQL لاحقاً في async init
-            pass
     
     def _init_sqlite(self):
-        """تهيئة قاعدة بيانات SQLite"""
         with db_lock:
             conn = sqlite3.connect(self.db_path, timeout=15)
             c = conn.cursor()
@@ -191,112 +184,35 @@ class Database:
             conn.close()
             logger.success("✅ قاعدة البيانات المحلية (SQLite) جاهزة")
             
-            # إضافة رسالة افتراضية
             if not self._get_all_messages_sync():
-                default_msg = "📢 **مرحباً بك في البوت!**\n\nهذه رسالة تجريبية للنشر في المجموعات."
+                default_msg = "📢 **مرحباً بك في البوت!**\n\nهذه رسالة تجريبية للنشر في المجموعات.\nيمكنك تغييرها من خلال قائمة إدارة الرسائل."
                 self._save_message_sync("default", default_msg, is_active=True)
     
     async def init_postgres(self):
-        """تهيئة قاعدة بيانات PostgreSQL (إذا تم توفير DATABASE_URL)"""
         if self.db_type != 'postgres':
             return
-        
         try:
             import asyncpg
             self.pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-            
             async with self.pg_pool.acquire() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at TIMESTAMPTZ DEFAULT NOW()
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        msg_id TEXT PRIMARY KEY,
-                        content TEXT,
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        is_active INTEGER DEFAULT 0
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS accounts (
-                        phone TEXT PRIMARY KEY,
-                        session_str TEXT,
-                        added_at TIMESTAMPTZ DEFAULT NOW(),
-                        last_active TIMESTAMPTZ DEFAULT NOW(),
-                        status TEXT DEFAULT 'active',
-                        total_posts INTEGER DEFAULT 0,
-                        success_posts INTEGER DEFAULT 0,
-                        failed_posts INTEGER DEFAULT 0
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS groups (
-                        group_id TEXT PRIMARY KEY,
-                        group_name TEXT,
-                        group_username TEXT,
-                        group_type TEXT,
-                        members_count INTEGER DEFAULT 0,
-                        added_by TEXT,
-                        added_at TIMESTAMPTZ DEFAULT NOW(),
-                        last_post TIMESTAMPTZ,
-                        post_count INTEGER DEFAULT 0,
-                        is_blacklisted INTEGER DEFAULT 0
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS posting_history (
-                        id SERIAL PRIMARY KEY,
-                        phone TEXT,
-                        group_id TEXT,
-                        group_name TEXT,
-                        sent_at TIMESTAMPTZ DEFAULT NOW(),
-                        status TEXT,
-                        error TEXT
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS joined_links (
-                        id SERIAL PRIMARY KEY,
-                        link TEXT,
-                        group_id TEXT,
-                        group_name TEXT,
-                        joined_at TIMESTAMPTZ DEFAULT NOW(),
-                        joined_by TEXT
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS contacts (
-                        id SERIAL PRIMARY KEY,
-                        name TEXT,
-                        phone TEXT,
-                        telegram_id TEXT,
-                        added_at TIMESTAMPTZ DEFAULT NOW()
-                    )
-                """)
-            
+                await conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
+                await conn.execute("CREATE TABLE IF NOT EXISTS messages (msg_id TEXT PRIMARY KEY, content TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), is_active INTEGER DEFAULT 0)")
+                await conn.execute("CREATE TABLE IF NOT EXISTS accounts (phone TEXT PRIMARY KEY, session_str TEXT, added_at TIMESTAMPTZ DEFAULT NOW(), last_active TIMESTAMPTZ DEFAULT NOW(), status TEXT DEFAULT 'active', total_posts INTEGER DEFAULT 0, success_posts INTEGER DEFAULT 0, failed_posts INTEGER DEFAULT 0)")
+                await conn.execute("CREATE TABLE IF NOT EXISTS groups (group_id TEXT PRIMARY KEY, group_name TEXT, group_username TEXT, group_type TEXT, members_count INTEGER DEFAULT 0, added_by TEXT, added_at TIMESTAMPTZ DEFAULT NOW(), last_post TIMESTAMPTZ, post_count INTEGER DEFAULT 0, is_blacklisted INTEGER DEFAULT 0)")
+                await conn.execute("CREATE TABLE IF NOT EXISTS posting_history (id SERIAL PRIMARY KEY, phone TEXT, group_id TEXT, group_name TEXT, sent_at TIMESTAMPTZ DEFAULT NOW(), status TEXT, error TEXT)")
+                await conn.execute("CREATE TABLE IF NOT EXISTS joined_links (id SERIAL PRIMARY KEY, link TEXT, group_id TEXT, group_name TEXT, joined_at TIMESTAMPTZ DEFAULT NOW(), joined_by TEXT)")
+                await conn.execute("CREATE TABLE IF NOT EXISTS contacts (id SERIAL PRIMARY KEY, name TEXT, phone TEXT, telegram_id TEXT, added_at TIMESTAMPTZ DEFAULT NOW())")
             logger.success("✅ قاعدة البيانات الخارجية (PostgreSQL) جاهزة")
-            
-            # رسالة افتراضية
-            msgs = await self._get_all_messages_pg()
-            if not msgs:
-                await self._save_message_pg("default", "📢 **مرحباً بك في البوت!**\n\nهذه رسالة تجريبية للنشر في المجموعات.", is_active=True)
-                
         except ImportError:
-            logger.error("❌ مكتبة asyncpg غير مثبتة. أضفها إلى requirements.txt")
+            logger.error("❌ مكتبة asyncpg غير مثبتة")
             self.db_type = 'sqlite'
             self._init_sqlite()
         except Exception as e:
-            logger.error(f"❌ فشل الاتصال بقاعدة البيانات الخارجية: {e}")
-            logger.info("🔄 التحويل إلى SQLite المحلية...")
+            logger.error(f"❌ فشل الاتصال بـ PostgreSQL: {e}")
             self.db_type = 'sqlite'
             self._init_sqlite()
     
     def _create_tables_sync(self, c):
-        """إنشاء الجداول في SQLite"""
         c.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMP)''')
         c.execute('''CREATE TABLE IF NOT EXISTS messages (msg_id TEXT PRIMARY KEY, content TEXT, created_at TIMESTAMP, is_active INTEGER DEFAULT 0)''')
         c.execute('''CREATE TABLE IF NOT EXISTS accounts (phone TEXT PRIMARY KEY, session_str TEXT, added_at TIMESTAMP, last_active TIMESTAMP, status TEXT, total_posts INTEGER DEFAULT 0, success_posts INTEGER DEFAULT 0, failed_posts INTEGER DEFAULT 0)''')
@@ -304,8 +220,6 @@ class Database:
         c.execute('''CREATE TABLE IF NOT EXISTS posting_history (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT, group_id TEXT, group_name TEXT, sent_at TIMESTAMP, status TEXT, error TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS joined_links (id INTEGER PRIMARY KEY AUTOINCREMENT, link TEXT, group_id TEXT, group_name TEXT, joined_at TIMESTAMP, joined_by TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, telegram_id TEXT, added_at TIMESTAMP)''')
-    
-    # ===== دوال SQLite المساعدة =====
     
     def _get_all_messages_sync(self):
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -326,24 +240,6 @@ class Database:
             finally:
                 conn.close()
     
-    # ===== دوال PostgreSQL المساعدة =====
-    
-    async def _get_all_messages_pg(self):
-        async with self.pg_pool.acquire() as conn:
-            rows = await conn.fetch('SELECT msg_id, content, is_active FROM messages ORDER BY created_at DESC')
-            return [(r['msg_id'], r['content'], r['is_active']) for r in rows]
-    
-    async def _save_message_pg(self, msg_id, content, is_active=False):
-        async with self.pg_pool.acquire() as conn:
-            if is_active:
-                await conn.execute('UPDATE messages SET is_active = 0')
-            await conn.execute(
-                'INSERT INTO messages (msg_id, content, created_at, is_active) VALUES ($1, $2, NOW(), $3) ON CONFLICT (msg_id) DO UPDATE SET content=$2, is_active=$3',
-                msg_id, content, 1 if is_active else 0
-            )
-    
-    # ===== دوال الإعدادات =====
-    
     def save_setting(self, key, value):
         if self.db_type == 'sqlite':
             with db_lock:
@@ -354,7 +250,6 @@ class Database:
                     conn.commit()
                 finally:
                     conn.close()
-        # ملاحظة: دوال PostgreSQL غير المتزامنة ستُستخدم فقط عند الحاجة
     
     def get_setting(self, key, default=None):
         if self.db_type == 'sqlite':
@@ -375,8 +270,6 @@ class Database:
             finally:
                 conn.close()
         return {}
-    
-    # ===== دوال الرسائل =====
     
     def save_message(self, msg_id, content, is_active=False):
         if self.db_type == 'sqlite':
@@ -428,8 +321,6 @@ class Database:
                 finally:
                     conn.close()
     
-    # ===== دوال الحسابات =====
-    
     def add_account(self, phone, session_str):
         if self.db_type == 'sqlite':
             with db_lock:
@@ -470,8 +361,6 @@ class Database:
             finally:
                 conn.close()
         return None
-    
-    # ===== دوال المجموعات =====
     
     def add_group(self, group_id, group_name, group_username, group_type, members_count, added_by):
         if self.db_type == 'sqlite':
@@ -533,8 +422,6 @@ class Database:
                 conn.close()
         return []
     
-    # ===== دوال النشر =====
-    
     def log_post(self, phone, group_id, group_name, status='success', error=None):
         if self.db_type == 'sqlite':
             with db_lock:
@@ -584,8 +471,6 @@ class Database:
                 conn.close()
         return []
     
-    # ===== دوال الروابط =====
-    
     def add_joined_link(self, link, group_id, group_name, joined_by):
         if self.db_type == 'sqlite':
             with db_lock:
@@ -614,8 +499,6 @@ class Database:
             finally:
                 conn.close()
         return 0
-    
-    # ===== دوال جهات الاتصال =====
     
     def add_contact(self, name, phone, telegram_id=""):
         if self.db_type == 'sqlite':
@@ -661,9 +544,6 @@ class Database:
             return backup_file
         return None
 
-# سننشئ db لاحقاً في main()
-db = None
-
 # ==================== المتغيرات العامة ====================
 
 USER_CLIENTS = {}
@@ -678,6 +558,7 @@ SETTINGS = {
 TEMP = {}
 is_posting = False
 bot = None
+db = None
 start_time = datetime.now()
 
 # ==================== وظائف مساعدة ====================
@@ -773,9 +654,10 @@ def contacts_buttons():
         [Button.inline("⬅️ عودة", b"back")]
     ]
 
-# ==================== المعالجات ====================
+# ==================== معالج البداية (بدون قفل) ====================
 
 async def start_handler(event):
+    """معالج أمر /start - بدون أي فحص للقنوات أو الاشتراكات"""
     if event.sender_id != ADMIN_ID:
         await event.respond("❌ غير مصرح لك باستخدام هذا البوت!")
         return
@@ -802,10 +684,13 @@ async def start_handler(event):
         buttons=main_buttons()
     )
 
+# ==================== معالج الأزرار (بدون قفل) ====================
+
 async def callback_handler(event):
     global SETTINGS, is_posting
     
     if event.sender_id != ADMIN_ID:
+        await event.answer("❌ غير مصرح لك!", alert=True)
         return
     
     data = event.data.decode()
@@ -858,33 +743,35 @@ async def callback_handler(event):
             await event.answer(f"الرسالة النشطة: {active['content'][:50]}...", alert=True)
         else:
             await event.answer("❌ لا توجد رسالة نشطة", alert=True)
-    
     elif data == "delete_database":
         await event.edit(
-            "⚠️ **تحذير!** ⚠️\n\n"
-            "أنت على وشك حذف قاعدة البيانات بالكامل!\n\n"
-            "هل أنت متأكد؟",
+            "⚠️ **تحذير!** ⚠️\n\nأنت على وشك حذف قاعدة البيانات بالكامل!\n\nهل أنت متأكد؟",
             buttons=[
                 [Button.inline("✅ نعم، احذف كل شيء", b"confirm_delete_db")],
                 [Button.inline("❌ إلغاء", b"advanced")]
             ]
         )
-    
     elif data == "confirm_delete_db":
         try:
             if DATABASE_URL:
                 await event.edit("⚠️ لا يمكن حذف قاعدة البيانات الخارجية من هنا.", buttons=[[Button.inline("⬅️ عودة", b"advanced")]])
                 return
-            
             db.create_backup()
             if os.path.exists(DB_PATH):
                 os.remove(DB_PATH)
             db._init_sqlite()
-            
             await event.edit("✅ **تم حذف قاعدة البيانات بنجاح!**", buttons=[[Button.inline("🔄 العودة للقائمة", b"back")]])
         except Exception as e:
             await event.edit(f"❌ فشل الحذف: {str(e)[:100]}", buttons=[[Button.inline("⬅️ عودة", b"advanced")]])
-    
+    elif data == "view_temp_blacklist":
+        banned = group_blacklist.banned_groups
+        if not banned:
+            await event.answer("📭 لا توجد مجموعات محظورة مؤقتاً", alert=True)
+        else:
+            text = "🚫 **المجموعات المحظورة مؤقتاً:**\n\n"
+            for gid in list(banned)[:20]:
+                text += f"• {gid}\n"
+            await event.edit(text, buttons=advanced_buttons())
     elif data == "manage_messages":
         await event.edit("📝 **إدارة الرسائل**", buttons=messages_buttons())
     elif data == "list_messages":
@@ -906,7 +793,6 @@ async def callback_handler(event):
         db.delete_message(msg_id)
         await event.answer("✅ تم حذف الرسالة", alert=True)
         await event.edit("📝 إدارة الرسائل", buttons=messages_buttons())
-    
     elif data == "toggle_autojoin":
         SETTINGS['auto_join_enabled'] = not SETTINGS.get('auto_join_enabled', True)
         db.save_setting('auto_join_enabled', SETTINGS['auto_join_enabled'])
@@ -943,7 +829,6 @@ async def callback_handler(event):
         TEMP[ADMIN_ID] = "search_groups"
     elif data == "group_stats":
         await show_group_stats(event)
-    
     elif data == "real_reports":
         await event.edit("📊 **التقارير**", buttons=reports_buttons())
     elif data == "real_stats":
@@ -954,7 +839,6 @@ async def callback_handler(event):
         await show_groups_report(event)
     elif data == "links_report":
         await show_links_report(event)
-    
     elif data == "contacts_menu":
         await event.edit("📞 **جهات الاتصال**\n\nاختر الإجراء المطلوب:", buttons=contacts_buttons())
     elif data == "add_contact":
@@ -966,7 +850,6 @@ async def callback_handler(event):
         await show_delete_contact(event)
     elif data == "message_contact":
         await show_message_contact(event)
-    
     elif data == "start_p":
         if not USER_CLIENTS:
             return await event.answer("❌ لا توجد حسابات!", alert=True)
@@ -983,8 +866,26 @@ async def callback_handler(event):
             return await event.answer("⚠️ النشر متوقف بالفعل!", alert=True)
         is_posting = False
         await event.edit("🛑 تم إيقاف النشر", buttons=main_buttons())
+    elif data.startswith("del_contact_"):
+        contact_id = int(data.replace("del_contact_", ""))
+        db.delete_contact(contact_id)
+        await event.answer("✅ تم حذف جهة الاتصال", alert=True)
+        await show_delete_contact(event)
+    elif data.startswith("msg_contact_"):
+        contact_id = int(data.replace("msg_contact_", ""))
+        contacts = db.get_contacts()
+        contact = next((c for c in contacts if c[0] == contact_id), None)
+        if contact:
+            active_msg = db.get_active_message()
+            if active_msg:
+                await event.edit(f"📨 سيتم إرسال الرسالة إلى **{contact[1]}**\n\nأرسل الرسالة الآن:")
+                TEMP[ADMIN_ID] = {"state": "send_to_contact", "contact_id": contact_id, "phone": contact[2]}
+            else:
+                await event.answer("❌ لا توجد رسالة نشطة", alert=True)
+        else:
+            await event.answer("❌ جهة الاتصال غير موجودة", alert=True)
 
-# ===== دوال العرض (نفس السابق، مختصرة) =====
+# ==================== دوال العرض ====================
 
 async def list_all_messages(event):
     messages = db.get_all_messages()
@@ -1028,22 +929,32 @@ async def show_status(event):
     stats = db.get_posting_stats()
     active_accounts = len([a for a in accounts if a[1] == 'active'])
     db_type = "PostgreSQL" if DATABASE_URL else "SQLite"
+    uptime = datetime.now() - start_time
+    hours = int(uptime.total_seconds() // 3600)
+    minutes = int((uptime.total_seconds() % 3600) // 60)
     
     text = f"📊 **حالة البوت**\n\n"
     text += f"🗄️ القاعدة: {db_type}\n"
+    text += f"⏰ وقت التشغيل: {hours}س {minutes}د\n"
     text += f"👤 الحسابات: {active_accounts}/{len(accounts)}\n"
     text += f"📨 منشورات اليوم: {stats['total']}\n"
+    text += f"✅ الناجح: {stats['success']}\n"
+    text += f"❌ الفاشل: {stats['failed']}\n"
     text += f"📢 المجموعات: {len(groups)}\n"
+    text += f"🚫 المحظورات: {len(db.get_blacklisted_groups())}\n"
     text += f"🔄 النشر: {'🟢 نشط' if is_posting else '🔴 متوقف'}\n"
     
     await event.edit(text, buttons=main_buttons())
 
 async def show_stats(event):
     stats = db.get_posting_stats()
+    recent = db.get_recent_posts(5)
     text = f"📈 **إحصائيات 24 ساعة**\n\n"
-    text += f"✅ الناجح: {stats['success']}\n"
-    text += f"❌ الفاشل: {stats['failed']}\n"
-    text += f"📊 الإجمالي: {stats['total']}\n"
+    text += f"✅ الناجح: {stats['success']}\n❌ الفاشل: {stats['failed']}\n📊 الإجمالي: {stats['total']}\n\n"
+    text += f"📋 **آخر 5 عمليات:**\n"
+    for phone, group, status, sent_at in recent:
+        icon = "✅" if status == 'success' else "❌"
+        text += f"{icon} {group[:20]}\n"
     await event.edit(text, buttons=main_buttons())
 
 async def show_groups(event):
@@ -1178,7 +1089,7 @@ async def show_message_contact(event):
     btns.append([Button.inline("⬅️ عودة", b"contacts_menu")])
     await event.edit("📨 اختر للإرسال", buttons=btns)
 
-# ===== دوال الإجراءات =====
+# ==================== دوال الإجراءات ====================
 
 async def delete_account(event, phone):
     if phone in USER_CLIENTS:
@@ -1207,6 +1118,8 @@ async def create_backup_handler(event):
         return
     backup_file = db.create_backup()
     await event.answer(f"✅ تم النسخ:\n{backup_file}", alert=True)
+
+# ==================== النشر ====================
 
 async def poster():
     global is_posting
@@ -1261,7 +1174,7 @@ async def main():
     start_time = datetime.now()
     
     print("=" * 60)
-    print("🤖 بوت النشر الخارق v4.0 - بدء التشغيل")
+    print("🤖 بوت النشر الخارق v5.0 - نسخة نظيفة")
     print(f"🗄️ نوع القاعدة: {'PostgreSQL خارجية' if DATABASE_URL else 'SQLite محلية'}")
     print("=" * 60)
     
@@ -1270,7 +1183,7 @@ async def main():
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
     await asyncio.sleep(1.5)
-    print("✅ Flask يجب أن يكون متاحاً الآن")
+    print("✅ Flask متاح الآن")
     
     # 2. تهيئة قاعدة البيانات
     print("🗄️ تهيئة قاعدة البيانات...")
@@ -1286,7 +1199,8 @@ async def main():
     
     # 4. بدء البوت
     await bot.start(bot_token=BOT_TOKEN)
-    print(f"✅ البوت يعمل: @{bot.me.username}" if bot.me else "✅ البوت يعمل")
+    bot_username = f"@{bot.me.username}" if bot.me else "جاهز"
+    print(f"✅ البوت يعمل: {bot_username}")
     
     # 5. تحميل الحسابات
     for phone, status, _, _, _ in db.get_accounts():
@@ -1302,7 +1216,8 @@ async def main():
                     print(f"❌ فشل حساب {phone[-8:]}: {e}")
     
     print("=" * 60)
-    print(f"✅ جاهز! المنفذ: {PORT} | القاعدة: {'PostgreSQL' if DATABASE_URL else 'SQLite'}")
+    print(f"✅ جاهز! المنفذ: {PORT}")
+    print(f"🤖 البوت: {bot_username}")
     print("=" * 60)
     
     await bot.run_until_disconnected()
