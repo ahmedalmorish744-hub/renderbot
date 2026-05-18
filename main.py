@@ -1695,3 +1695,8 @@ if __name__ == "__main__":
         print("🔄 إعادة التشغيل...")
         time.sleep(5)
         os.execl(sys.executable, sys.executable, *sys.argv)
+import os
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
