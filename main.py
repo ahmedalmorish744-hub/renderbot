@@ -29,6 +29,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from flask import Flask, jsonify
 from threading import Thread
+from werkzeug.serving import run_simple
 
 # ==================== الإعدادات الأساسية ====================
 
@@ -51,7 +52,7 @@ for dir_path in [DATA_DIR, BACKUPS_DIR, LOGS_DIR]:
 # ==================== قفل قاعدة البيانات ====================
 db_lock = threading.Lock()
 
-# ==================== خادم الويب ====================
+# ==================== خادم الويب (مع إصلاح المنفذ) ====================
 app = Flask(__name__)
 
 @app.route('/')
@@ -60,8 +61,7 @@ def home():
         'status': 'online',
         'msg': '🤖 البوت يعمل بنجاح!',
         'time': str(datetime.now()),
-        'uptime': str(datetime.now() - start_time),
-        'version': '3.0.0'
+        'port': PORT
     })
 
 @app.route('/health')
@@ -72,7 +72,8 @@ def run_web():
     """تشغيل خادم الويب - يفتح المنفذ تلقائياً"""
     print(f"🌐 [WEB] بدء تشغيل خادم الويب على المنفذ {PORT}...")
     try:
-        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+        # استخدام run_simple بدلاً من app.run لضمان فتح المنفذ
+        run_simple('0.0.0.0', PORT, app, use_reloader=False, use_debugger=False)
     except Exception as e:
         print(f"💥 [WEB] فشل تشغيل الخادم: {e}")
 
@@ -844,7 +845,120 @@ async def callback_handler(event):
         is_posting = False
         await event.edit("🛑 تم إيقاف النشر", buttons=main_buttons())
 
-# ===== دوال العرض =====
+# ===== دوال العرض الأساسية (المختصرة) =====
+
+async def show_status(event):
+    accounts = db.get_accounts()
+    groups = db.get_all_groups()
+    blacklisted = db.get_blacklisted_groups()
+    stats = db.get_posting_stats()
+    joined_links = db.get_joined_links_count()
+    messages_count = len(db.get_all_messages())
+    active_msg = db.get_active_message()
+    uptime = datetime.now() - start_time
+    hours = uptime.total_seconds() // 3600
+    minutes = (uptime.total_seconds() % 3600) // 60
+    
+    active_accounts = len([a for a in accounts if a[1] == 'active'])
+    contacts_count = len(db.get_contacts())
+    
+    text = f"📊 **حالة البوت**\n\n"
+    text += f"🗄️ **قاعدة البيانات:** 📁 محلية SQLite\n"
+    text += f"🔐 **التشفير:** {'مفعل' if SETTINGS['encryption'] else 'معطل'}\n"
+    text += f"⏰ **وقت التشغيل:** {int(hours)} س {int(minutes)} د\n"
+    text += f"👤 **الحسابات:** {active_accounts}/{len(accounts)}\n"
+    text += f"📨 **المنشورات اليوم:** {stats['total']}\n"
+    text += f"✅ **الناجح:** {stats['success']}\n"
+    text += f"❌ **الفاشل:** {stats['failed']}\n"
+    text += f"📢 **المجموعات:** {len(groups)}\n"
+    text += f"🚫 **المحظورات:** {len(blacklisted)}\n"
+    text += f"🔗 **الروابط:** {joined_links}\n"
+    text += f"📝 **الرسائل:** {messages_count}\n"
+    text += f"📞 **جهات الاتصال:** {contacts_count}\n"
+    text += f"⚙️ **الفاصل:** {SETTINGS['interval']} ثانية\n"
+    text += f"🚫 **محظورات مؤقتة:** {group_blacklist.get_banned_count()}\n"
+    text += f"🔄 **النشر:** {'🟢 نشط' if is_posting else '🔴 متوقف'}\n"
+    
+    if active_msg:
+        text += f"\n📨 **الرسالة النشطة:**\n{active_msg['content'][:100]}..."
+    
+    await event.edit(text, buttons=main_buttons())
+
+async def show_stats(event):
+    stats = db.get_posting_stats()
+    recent = db.get_recent_posts(5)
+    
+    text = f"📈 **إحصائيات آخر 24 ساعة**\n\n"
+    text += f"📊 الإجمالي: {stats['total']}\n"
+    text += f"✅ الناجح: {stats['success']}\n"
+    text += f"❌ الفاشل: {stats['failed']}\n"
+    text += f"📊 نسبة النجاح: {stats['success']/(stats['total'] or 1)*100:.1f}%\n\n"
+    
+    if recent:
+        text += f"📋 آخر النشاطات:\n"
+        for phone, group, status, sent_at in recent[:5]:
+            time_str = sent_at.strftime('%H:%M') if isinstance(sent_at, datetime) else sent_at[:5]
+            icon = "✅" if status == 'success' else "❌"
+            text += f"{icon} {time_str} - {group[:20]}\n"
+    
+    await event.edit(text, buttons=main_buttons())
+
+async def show_groups(event):
+    groups = db.get_all_groups()
+    blacklisted = db.get_blacklisted_groups()
+    
+    text = f"📢 **المجموعات**\nالإجمالي: {len(groups)}\nالمحظور: {len(blacklisted)}\n\n"
+    
+    for gid, name, members, posts, bl, last in groups[:15]:
+        name_short = name[:25] if name else "بدون اسم"
+        status = "🚫" if bl else "✅"
+        members_fmt = format_number(members) if members else "?"
+        text += f"{status} {name_short}\n   👥 {members_fmt} | 📨 {posts}\n"
+    
+    if len(groups) > 15:
+        text += f"\n... و {len(groups) - 15} مجموعة أخرى"
+    
+    await event.edit(text, buttons=main_buttons())
+
+async def show_joined_links(event):
+    links = db.get_joined_links(20)
+    if not links:
+        await event.edit("📭 لا توجد روابط\n\nأرسل روابط المجموعات للانضمام.", buttons=main_buttons())
+        return
+    
+    text = "🔗 **آخر 20 رابط تم الانضمام لها**\n\n"
+    for link, group_name, joined_at, joined_by in links:
+        time_str = joined_at.strftime('%Y-%m-%d %H:%M') if isinstance(joined_at, datetime) else joined_at[:16]
+        text += f"• **{group_name[:30]}**\n"
+        text += f"  🔗 {link[:40]}...\n"
+        text += f"  📱 {joined_by[-8:]} | 🕐 {time_str}\n\n"
+    
+    await event.edit(text, buttons=main_buttons())
+
+async def show_blacklist(event):
+    blacklisted = db.get_blacklisted_groups()
+    if not blacklisted:
+        await event.edit("📭 لا توجد مجموعات محظورة", buttons=blacklist_buttons())
+        return
+    
+    text = "🚫 **المجموعات المحظورة**\n\n"
+    for gid, name in blacklisted[:20]:
+        text += f"• {name[:40]}\n"
+        text += f"  🆔 {gid}\n\n"
+    
+    await event.edit(text, buttons=blacklist_buttons())
+
+async def show_remove_blacklist(event):
+    blacklisted = db.get_blacklisted_groups()
+    if not blacklisted:
+        return await event.answer("❌ لا توجد محظورات", alert=True)
+    
+    btns = []
+    for gid, name in blacklisted[:10]:
+        btns.append([Button.inline(f"✅ {name[:20]}", f"unblack_{gid}".encode())])
+    
+    btns.append([Button.inline("⬅️ عودة", b"blacklist_menu")])
+    await event.edit("✅ اختر مجموعة للإزالة", buttons=btns)
 
 async def list_all_messages(event):
     messages = db.get_all_messages()
@@ -857,9 +971,6 @@ async def list_all_messages(event):
         status = "🌟 نشطة" if is_active else "📄 عادية"
         preview = content[:50] + "..." if len(content) > 50 else content
         text += f"{i}. {status}\n   `{preview}`\n   🆔 {msg_id}\n\n"
-    
-    if len(messages) > 15:
-        text += f"\n... و {len(messages) - 15} رسالة أخرى"
     
     await event.edit(text, buttons=messages_buttons())
 
@@ -891,10 +1002,67 @@ async def show_delete_message(event):
     btns.append([Button.inline("⬅️ عودة", b"manage_messages")])
     await event.edit("🗑 اختر رسالة للحذف", buttons=btns)
 
+async def show_delete_list(event):
+    accounts = db.get_accounts()
+    if not accounts:
+        return await event.answer("❌ لا توجد حسابات", alert=True)
+    
+    btns = []
+    for phone, status, posts, success, failed in accounts[:10]:
+        short = phone[-8:] if len(phone) > 8 else phone
+        status_icon = "🟢" if status == 'active' else "🔴"
+        btns.append([Button.inline(f"{status_icon} {short} ({posts})", f"rm_{phone}".encode())])
+    
+    btns.append([Button.inline("⬅️ عودة", b"back")])
+    await event.edit("🗑 اختر حساباً للحذف", buttons=btns)
+
+async def show_contacts_list(event):
+    contacts = db.get_contacts()
+    if not contacts:
+        await event.edit("📭 **لا توجد جهات اتصال**\n\nاستخدم زر '➕ إضافة جهة اتصال' لإضافة جهة جديدة.", 
+                        buttons=contacts_buttons())
+        return
+    
+    text = "📞 **جهات الاتصال**\n\n"
+    for i, (cid, name, phone, tg_id, added_at) in enumerate(contacts[:20], 1):
+        added_time = added_at.strftime('%Y-%m-%d') if isinstance(added_at, datetime) else added_at[:10]
+        text += f"{i}. **{name}**\n"
+        text += f"   📱 {phone}\n"
+        if tg_id:
+            text += f"   🆔 {tg_id}\n"
+        text += f"   🕐 {added_time}\n\n"
+    
+    await event.edit(text, buttons=contacts_buttons())
+
+async def show_delete_contact(event):
+    contacts = db.get_contacts()
+    if not contacts:
+        await event.answer("❌ لا توجد جهات اتصال!", alert=True)
+        return
+    
+    btns = []
+    for cid, name, phone, tg_id, added_at in contacts[:10]:
+        btns.append([Button.inline(f"🗑 {name[:20]}", f"del_contact_{cid}".encode())])
+    
+    btns.append([Button.inline("⬅️ عودة", b"contacts_menu")])
+    await event.edit("🗑 **اختر جهة اتصال للحذف:**", buttons=btns)
+
+async def show_message_contact(event):
+    contacts = db.get_contacts()
+    if not contacts:
+        await event.answer("❌ لا توجد جهات اتصال!", alert=True)
+        return
+    
+    btns = []
+    for cid, name, phone, tg_id, added_at in contacts[:10]:
+        btns.append([Button.inline(f"📨 {name[:20]}", f"msg_contact_{cid}".encode())])
+    
+    btns.append([Button.inline("⬅️ عودة", b"contacts_menu")])
+    await event.edit("📨 **اختر جهة اتصال لإرسال رسالة:**", buttons=btns)
+
 async def show_real_stats(event):
     stats_24h = db.get_posting_stats(24)
     stats_7d = db.get_posting_stats(168)
-    recent = db.get_recent_posts(10)
     
     text = "📊 **إحصائيات النشر**\n\n"
     text += f"**آخر 24 ساعة:**\n"
@@ -907,13 +1075,7 @@ async def show_real_stats(event):
     text += f"• الإجمالي: {stats_7d['total']}\n"
     text += f"• الناجح: {stats_7d['success']}\n"
     text += f"• الفاشل: {stats_7d['failed']}\n"
-    text += f"• نسبة النجاح: {stats_7d['success']/(stats_7d['total'] or 1)*100:.1f}%\n\n"
-    
-    text += f"**آخر 10 عمليات:**\n"
-    for phone, group, status, sent_at in recent:
-        time_str = datetime.fromisoformat(sent_at).strftime('%H:%M:%S')
-        icon = "✅" if status == 'success' else "❌"
-        text += f"{icon} {time_str} - {group[:25]} ({phone[-8:]})\n"
+    text += f"• نسبة النجاح: {stats_7d['success']/(stats_7d['total'] or 1)*100:.1f}%"
     
     await event.edit(text, buttons=reports_buttons())
 
@@ -950,13 +1112,11 @@ async def show_groups_report(event):
         return
     
     text = "📢 **تقرير المجموعات**\n\n"
-    total_members = 0
     total_posts = 0
     
     top_groups = sorted(groups, key=lambda x: x[3], reverse=True)[:10]
     
     for gid, name, members, posts, bl, last in top_groups:
-        total_members += members or 0
         total_posts += posts
         status = "🚫" if bl else "✅"
         members_fmt = format_number(members) if members else "?"
@@ -965,7 +1125,6 @@ async def show_groups_report(event):
     
     text += f"**الإجمالي:**\n"
     text += f"• المجموعات: {len(groups)}\n"
-    text += f"• إجمالي الأعضاء: {format_number(total_members)}\n"
     text += f"• إجمالي المنشورات: {total_posts}\n"
     text += f"• المتوسط: {total_posts/len(groups):.1f}"
     
@@ -982,67 +1141,12 @@ async def show_links_report(event):
     text += "**آخر 20 رابط:**\n"
     
     for link, group_name, joined_at, joined_by in links[:20]:
-        time_str = datetime.fromisoformat(joined_at).strftime('%Y-%m-%d %H:%M')
+        time_str = joined_at.strftime('%Y-%m-%d %H:%M') if isinstance(joined_at, datetime) else joined_at[:16]
         text += f"• **{group_name[:30]}**\n"
         text += f"  🔗 {link[:40]}...\n"
         text += f"  📱 {joined_by[-8:]} | 🕐 {time_str}\n\n"
     
     await event.edit(text, buttons=reports_buttons())
-
-async def show_status(event):
-    accounts = db.get_accounts()
-    groups = db.get_all_groups()
-    blacklisted = db.get_blacklisted_groups()
-    stats = db.get_posting_stats()
-    joined_links = db.get_joined_links_count()
-    messages_count = len(db.get_all_messages())
-    active_msg = db.get_active_message()
-    uptime = datetime.now() - start_time
-    hours = uptime.total_seconds() // 3600
-    minutes = (uptime.total_seconds() % 3600) // 60
-    
-    active_accounts = len([a for a in accounts if a[1] == 'active'])
-    contacts_count = len(db.get_contacts())
-    
-    text = f"📊 **حالة البوت**\n\n"
-    text += f"🗄️ **قاعدة البيانات:** 📁 محلية SQLite\n"
-    text += f"🔐 **التشفير:** ذكي (يحافظ على الروابط)\n"
-    text += f"⏰ **وقت التشغيل:** {int(hours)} س {int(minutes)} د\n"
-    text += f"👤 **الحسابات:** {active_accounts}/{len(accounts)}\n"
-    text += f"📨 **المنشورات اليوم:** {stats['total']}\n"
-    text += f"✅ **الناجح:** {stats['success']}\n"
-    text += f"❌ **الفاشل:** {stats['failed']}\n"
-    text += f"📢 **المجموعات:** {len(groups)}\n"
-    text += f"🚫 **المحظورات:** {len(blacklisted)}\n"
-    text += f"🔗 **الروابط:** {joined_links}\n"
-    text += f"📝 **الرسائل:** {messages_count}\n"
-    text += f"📞 **جهات الاتصال:** {contacts_count}\n"
-    text += f"⚙️ **الفاصل:** {SETTINGS['interval']} ثانية\n"
-    text += f"🚫 **محظورات مؤقتة:** {group_blacklist.get_banned_count()}\n"
-    text += f"🔄 **النشر:** {'🟢 نشط' if is_posting else '🔴 متوقف'}\n"
-    
-    if active_msg:
-        text += f"\n📨 **الرسالة النشطة:**\n{active_msg['content'][:100]}..."
-    
-    await event.edit(text, buttons=main_buttons())
-
-async def show_stats(event):
-    stats = db.get_posting_stats()
-    recent = db.get_recent_posts(5)
-    
-    text = f"📈 **إحصائيات آخر 24 ساعة**\n\n"
-    text += f"📊 الإجمالي: {stats['total']}\n"
-    text += f"✅ الناجح: {stats['success']}\n"
-    text += f"❌ الفاشل: {stats['failed']}\n"
-    text += f"📊 نسبة النجاح: {stats['success']/(stats['total'] or 1)*100:.1f}%\n\n"
-    text += f"📋 آخر النشاطات:\n"
-    
-    for phone, group, status, sent_at in recent:
-        time_str = datetime.fromisoformat(sent_at).strftime('%H:%M')
-        icon = "✅" if status == 'success' else "❌"
-        text += f"{icon} {time_str} - {group[:20]}\n"
-    
-    await event.edit(text, buttons=main_buttons())
 
 async def show_detailed_stats(event):
     accounts = db.get_accounts()
@@ -1072,70 +1176,11 @@ async def show_posting_history(event):
     text = "📋 **آخر 15 عملية نشر**\n\n"
     
     for phone, group, status, sent_at in recent:
-        time_str = datetime.fromisoformat(sent_at).strftime('%H:%M:%S')
+        time_str = sent_at.strftime('%H:%M:%S') if isinstance(sent_at, datetime) else sent_at[:19]
         icon = "✅" if status == 'success' else "❌"
         text += f"{icon} {time_str} - {group[:20]}\n"
     
     await event.edit(text, buttons=advanced_buttons())
-
-async def show_delete_list(event):
-    accounts = db.get_accounts()
-    if not accounts:
-        return await event.answer("❌ لا توجد حسابات", alert=True)
-    
-    btns = []
-    for phone, status, posts, success, failed in accounts[:10]:
-        short = phone[-8:] if len(phone) > 8 else phone
-        status_icon = "🟢" if status == 'active' else "🔴"
-        btns.append([Button.inline(f"{status_icon} {short} ({posts})", f"rm_{phone}".encode())])
-    
-    btns.append([Button.inline("⬅️ عودة", b"back")])
-    await event.edit("🗑 اختر حساباً للحذف", buttons=btns)
-
-async def show_groups(event):
-    groups = db.get_all_groups()
-    blacklisted = db.get_blacklisted_groups()
-    
-    text = f"📢 **المجموعات**\nالإجمالي: {len(groups)}\nالمحظور: {len(blacklisted)}\n\n"
-    
-    for gid, name, members, posts, bl, last in groups[:15]:
-        name_short = name[:25] if name else "بدون اسم"
-        status = "🚫" if bl else "✅"
-        members_fmt = format_number(members) if members else "?"
-        text += f"{status} {name_short}\n   👥 {members_fmt} | 📨 {posts}\n"
-    
-    if len(groups) > 15:
-        text += f"\n... و {len(groups) - 15} مجموعة أخرى"
-    
-    await event.edit(text, buttons=main_buttons())
-
-async def show_blacklist(event):
-    blacklisted = db.get_blacklisted_groups()
-    if not blacklisted:
-        await event.edit("📭 لا توجد مجموعات محظورة", buttons=blacklist_buttons())
-        return
-    
-    text = "🚫 **المجموعات المحظورة**\n\n"
-    for gid, name in blacklisted[:20]:
-        text += f"• {name[:40]}\n"
-        text += f"  🆔 {gid}\n\n"
-    
-    if len(blacklisted) > 20:
-        text += f"\n... و {len(blacklisted) - 20} مجموعة أخرى"
-    
-    await event.edit(text, buttons=blacklist_buttons())
-
-async def show_remove_blacklist(event):
-    blacklisted = db.get_blacklisted_groups()
-    if not blacklisted:
-        return await event.answer("❌ لا توجد محظورات", alert=True)
-    
-    btns = []
-    for gid, name in blacklisted[:10]:
-        btns.append([Button.inline(f"✅ {name[:20]}", f"unblack_{gid}".encode())])
-    
-    btns.append([Button.inline("⬅️ عودة", b"blacklist_menu")])
-    await event.edit("✅ اختر مجموعة للإزالة", buttons=btns)
 
 async def show_group_stats(event):
     groups = db.get_all_groups()
@@ -1157,81 +1202,17 @@ async def show_group_stats(event):
     
     await event.edit(text, buttons=groups_buttons())
 
-async def show_joined_links(event):
-    links = db.get_joined_links(20)
-    if not links:
-        await event.edit("📭 لا توجد روابط\n\nأرسل روابط المجموعات للانضمام.", buttons=main_buttons())
-        return
-    
-    text = "🔗 **آخر 20 رابط تم الانضمام لها**\n\n"
-    for link, group_name, joined_at, joined_by in links:
-        time_str = datetime.fromisoformat(joined_at).strftime('%Y-%m-%d %H:%M')
-        text += f"• **{group_name[:30]}**\n"
-        text += f"  🔗 {link[:40]}...\n"
-        text += f"  📱 {joined_by[-8:]} | 🕐 {time_str}\n\n"
-    
-    await event.edit(text, buttons=main_buttons())
-
-# ===== دوال جهات الاتصال =====
-
-async def show_contacts_list(event):
-    contacts = db.get_contacts()
-    if not contacts:
-        await event.edit("📭 **لا توجد جهات اتصال**\n\nاستخدم زر '➕ إضافة جهة اتصال' لإضافة جهة جديدة.", 
-                        buttons=contacts_buttons())
-        return
-    
-    text = "📞 **جهات الاتصال**\n\n"
-    for i, (cid, name, phone, tg_id, added_at) in enumerate(contacts[:20], 1):
-        added_time = datetime.fromisoformat(added_at).strftime('%Y-%m-%d')
-        text += f"{i}. **{name}**\n"
-        text += f"   📱 {phone}\n"
-        if tg_id:
-            text += f"   🆔 {tg_id}\n"
-        text += f"   🕐 {added_time}\n\n"
-    
-    if len(contacts) > 20:
-        text += f"\n... و {len(contacts) - 20} جهة أخرى"
-    
-    await event.edit(text, buttons=contacts_buttons())
-
-async def show_delete_contact(event):
-    contacts = db.get_contacts()
-    if not contacts:
-        await event.answer("❌ لا توجد جهات اتصال!", alert=True)
-        return
-    
-    btns = []
-    for cid, name, phone, tg_id, added_at in contacts[:10]:
-        btns.append([Button.inline(f"🗑 {name[:20]}", f"del_contact_{cid}".encode())])
-    
-    btns.append([Button.inline("⬅️ عودة", b"contacts_menu")])
-    await event.edit("🗑 **اختر جهة اتصال للحذف:**", buttons=btns)
-
-async def show_message_contact(event):
-    contacts = db.get_contacts()
-    if not contacts:
-        await event.answer("❌ لا توجد جهات اتصال!", alert=True)
-        return
-    
-    btns = []
-    for cid, name, phone, tg_id, added_at in contacts[:10]:
-        btns.append([Button.inline(f"📨 {name[:20]}", f"msg_contact_{cid}".encode())])
-    
-    btns.append([Button.inline("⬅️ عودة", b"contacts_menu")])
-    await event.edit("📨 **اختر جهة اتصال لإرسال رسالة:**\n\nسيتم إرسال آخر رسالة نشطة إلى جهة الاتصال.", buttons=btns)
-
 # ===== دوال الإجراءات =====
 
 async def delete_account(event, phone):
     if phone in USER_CLIENTS:
         try:
             await USER_CLIENTS[phone].disconnect()
+            del USER_CLIENTS[phone]
         except:
             pass
-        del USER_CLIENTS[phone]
     db.remove_account(phone)
-    await event.answer(f"✅ تم حذف {phone}", alert=True)
+    await event.answer(f"✅ تم حذف الحساب {phone}", alert=True)
     await show_delete_list(event)
 
 async def remove_from_blacklist(event, group_id):
@@ -1241,87 +1222,319 @@ async def remove_from_blacklist(event, group_id):
     await show_remove_blacklist(event)
 
 async def refresh_groups(event):
-    await event.edit("🔄 جاري تحديث قائمة المجموعات...")
-    # هنا يمكنك إضافة كود لتحديث المجموعات من الحسابات
+    await event.answer("🔄 جاري تحديث قائمة المجموعات...", alert=True)
+    # هنا يمكن إضافة كود لتحديث المجموعات
     await asyncio.sleep(1)
-    groups = db.get_all_groups()
-    await event.edit(f"✅ تم تحديث المجموعات\nالإجمالي: {len(groups)}", buttons=groups_buttons())
+    await event.answer("✅ تم تحديث المجموعات", alert=True)
 
 async def create_backup_handler(event):
-    backup_file = db.create_backup()
-    await event.answer(f"✅ تم إنشاء نسخة احتياطية:\n{backup_file}", alert=True)
+    try:
+        backup_file = db.create_backup()
+        await event.answer(f"✅ تم إنشاء نسخة احتياطية:\n{backup_file}", alert=True)
+    except Exception as e:
+        await event.answer(f"❌ فشل إنشاء النسخة: {e}", alert=True)
 
-# ===== وظائف النشر =====
+# ===== معالج النصوص =====
+
+async def text_handler(event):
+    user_id = event.sender_id
+    if user_id != ADMIN_ID:
+        return
+    
+    state = TEMP.get(ADMIN_ID)
+    text = event.message.text.strip()
+    
+    if state == "new_message":
+        msg_id = f"msg_{int(time.time())}"
+        db.save_message(msg_id, text, is_active=False)
+        TEMP.pop(ADMIN_ID, None)
+        await event.respond(f"✅ **تم إضافة الرسالة!**", buttons=messages_buttons())
+        return
+    
+    elif state == "phone":
+        await handle_phone_login(event, text)
+        return
+    
+    elif isinstance(state, dict) and state.get("state") == "code":
+        await handle_code_verification(event, state, text)
+        return
+    
+    elif isinstance(state, dict) and state.get("state") == "password":
+        await handle_password(event, state, text)
+        return
+    
+    elif state == "time":
+        try:
+            interval = int(text)
+            if 3 <= interval <= 60:
+                SETTINGS['interval'] = interval
+                db.save_setting('interval', interval)
+                TEMP.pop(ADMIN_ID, None)
+                await event.respond(f"✅ تم ضبط الوقت على {text} ثانية", buttons=main_buttons())
+            else:
+                await event.respond("❌ الرجاء إدخال قيمة بين 3 و 60")
+        except:
+            await event.respond("❌ أرسل رقماً فقط")
+        return
+    
+    elif state == "add_blacklist":
+        groups = db.search_groups(text)
+        if groups:
+            for gid, name, members in groups[:5]:
+                db.blacklist_group(gid)
+            await event.respond(f"✅ تم حظر {len(groups[:5])} مجموعة")
+        else:
+            await event.respond("❌ لم يتم العثور على مجموعات")
+        TEMP.pop(ADMIN_ID, None)
+        await event.respond("⚙️ الإعدادات المتقدمة:", buttons=advanced_buttons())
+        return
+    
+    elif state == "search_groups":
+        groups = db.search_groups(text)
+        if groups:
+            msg = f"🔍 **نتائج البحث:**\n\n"
+            for gid, name, members in groups:
+                msg += f"• {name[:40]}\n  👥 {format_number(members)}\n"
+            await event.respond(msg)
+        else:
+            await event.respond("❌ لا توجد نتائج")
+        TEMP.pop(ADMIN_ID, None)
+        return
+    
+    elif isinstance(state, dict) and state.get("state") == "add_contact":
+        parts = text.rsplit(' ', 1)
+        if len(parts) == 2:
+            name = parts[0]
+            phone = parts[1]
+            db.add_contact(name, phone)
+            await event.respond(f"✅ **تم إضافة جهة الاتصال:**\n📞 {name}\n📱 {phone}")
+        else:
+            await event.respond("❌ **صيغة غير صحيحة!**\nأرسل الاسم ثم رقم الهاتف\nمثال: أحمد +967712345678")
+        TEMP.pop(ADMIN_ID, None)
+        await event.respond("📞 قائمة جهات الاتصال:", buttons=contacts_buttons())
+        return
+    
+    else:
+        # معالجة الروابط للانضمام التلقائي
+        links = re.findall(r"(https?://t\.me/(?:joinchat/|\+)[a-zA-Z0-9_-]+|https?://t\.me/[a-zA-Z0-9_]+)", text)
+        if links and SETTINGS.get('auto_join_enabled', True) and USER_CLIENTS:
+            await handle_auto_join(event, links)
+
+# ===== دوال تسجيل الدخول =====
+
+async def handle_phone_login(event, phone):
+    try:
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        await client.send_code_request(phone)
+        
+        TEMP[ADMIN_ID] = {
+            "state": "code",
+            "phone": phone,
+            "client": client
+        }
+        
+        await event.respond(f"📩 **تم إرسال كود التحقق** إلى {phone}\n\nأرسل الكود:")
+        logger.info(f"📱 تم إرسال كود التحقق إلى {phone}")
+        
+    except Exception as e:
+        await event.respond(f"❌ **خطأ:** {str(e)[:200]}")
+
+async def handle_code_verification(event, state, code):
+    try:
+        client = state["client"]
+        phone = state["phone"]
+        
+        await client.sign_in(phone, code)
+        
+        session_str = client.session.save()
+        db.add_account(phone, session_str)
+        USER_CLIENTS[phone] = client
+        
+        TEMP.pop(ADMIN_ID, None)
+        
+        await event.respond(f"✅ **تم تفعيل الحساب بنجاح!**\n\n📱 {phone}")
+        logger.success(f"✅ تم تسجيل الدخول بنجاح: {phone}")
+        
+    except SessionPasswordNeededError:
+        TEMP[ADMIN_ID] = {
+            "state": "password",
+            "phone": phone,
+            "client": client
+        }
+        await event.respond("🔐 **يتطلب الحساب كلمة مرور** (2FA)\n\nأرسل كلمة المرور:")
+    except Exception as e:
+        await event.respond(f"❌ **فشل التحقق:** {str(e)[:200]}")
+        TEMP.pop(ADMIN_ID, None)
+
+async def handle_password(event, state, password):
+    try:
+        client = state["client"]
+        phone = state["phone"]
+        
+        await client.sign_in(password=password)
+        
+        session_str = client.session.save()
+        db.add_account(phone, session_str)
+        USER_CLIENTS[phone] = client
+        
+        TEMP.pop(ADMIN_ID, None)
+        
+        await event.respond(f"✅ **تم تفعيل الحساب بنجاح!**\n\n📱 {phone}")
+        logger.success(f"✅ تم تسجيل الدخول (2FA): {phone}")
+        
+    except Exception as e:
+        await event.respond(f"❌ **كلمة مرور غير صحيحة!**")
+
+# ===== دالة الانضمام التلقائي =====
+
+async def handle_auto_join(event, links):
+    await event.respond(f"🔄 جاري معالجة {len(links)} رابط...")
+    
+    success = 0
+    failed = 0
+    
+    for link in links[:5]:  # حد أقصى 5 روابط
+        joined = False
+        for phone, client in USER_CLIENTS.items():
+            if joined:
+                break
+            
+            try:
+                if "joinchat" in link or "+" in link:
+                    hash_part = link.split('/')[-1].replace('+', '')
+                    await client(ImportChatInviteRequest(hash_part))
+                else:
+                    username = link.split('/')[-1]
+                    await client(JoinChannelRequest(username))
+                
+                success += 1
+                joined = True
+                logger.success(f"✅ تم الانضمام إلى {link}")
+                
+                # تأخير بين الانضمامات
+                await asyncio.sleep(random.randint(2, 5))
+                
+            except FloodWaitError as e:
+                logger.warning(f"⏳ FloodWait: انتظار {e.seconds} ثانية")
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                logger.error(f"❌ فشل الانضمام إلى {link}: {e}")
+                failed += 1
+        
+        if not joined:
+            failed += 1
+    
+    result_text = f"📊 **نتيجة الانضمام:**\n"
+    result_text += f"✅ نجاح: {success}\n"
+    result_text += f"❌ فشل: {failed}"
+    
+    await event.respond(result_text)
+
+# ===== دالة النشر =====
 
 async def poster():
-    """وظيفة النشر الرئيسية"""
     global is_posting
     logger.info("🚀 بدء عملية النشر...")
     
     while is_posting:
         try:
-            groups = db.get_all_groups()
-            active_msg = db.get_active_message()
-            
-            if not groups:
-                logger.warning("⚠️ لا توجد مجموعات للنشر")
+            if not USER_CLIENTS:
+                logger.warning("⚠️ لا توجد حسابات للنشر")
                 await asyncio.sleep(10)
                 continue
             
+            active_msg = db.get_active_message()
             if not active_msg:
                 logger.warning("⚠️ لا توجد رسالة نشطة")
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
                 continue
             
-            if not USER_CLIENTS:
-                logger.warning("⚠️ لا توجد حسابات نشطة")
-                await asyncio.sleep(10)
-                continue
+            txt = active_msg['content']
+            encrypted_txt = encrypt_text(txt) if SETTINGS.get('encryption') else txt
             
-            # اختيار حساب عشوائي
-            phone = random.choice(list(USER_CLIENTS.keys()))
-            client = USER_CLIENTS.get(phone)
-            
-            if not client:
-                continue
-            
-            # اختيار مجموعة عشوائية غير محظورة
-            available_groups = [g for g in groups if not g[4] and not group_blacklist.is_banned(g[0])]
-            if not available_groups:
-                logger.warning("⚠️ لا توجد مجموعات متاحة للنشر")
-                await asyncio.sleep(10)
-                continue
-            
-            group = random.choice(available_groups)
-            group_id, group_name = group[0], group[1]
-            
-            try:
-                # تشفير الرسالة إذا كان مفعلاً
-                message_text = encrypt_text(active_msg['content']) if SETTINGS.get('encryption') else active_msg['content']
+            for phone, client in USER_CLIENTS.items():
+                if not is_posting:
+                    break
                 
-                # محاولة الإرسال
-                entity = await client.get_entity(int(group_id))
-                await client.send_message(entity, message_text)
-                
-                db.log_post(phone, group_id, group_name, 'success')
-                logger.success(f"✅ تم النشر في {group_name[:30]} بواسطة {phone[-8:]}")
-                
-            except Exception as e:
-                error_msg = str(e)[:100]
-                db.log_post(phone, group_id, group_name, 'failed', error_msg)
-                group_blacklist.record_failure(group_id, error_msg)
-                logger.error(f"❌ فشل النشر في {group_name[:30]}: {error_msg}")
-            
-            # انتظار الفاصل الزمني
-            interval = SETTINGS.get('interval', 5)
-            if SETTINGS.get('anti_detection'):
-                interval += random.uniform(1, 4)
-            
-            await asyncio.sleep(interval)
+                try:
+                    groups_sent = 0
+                    async for dialog in client.iter_dialogs():
+                        if not is_posting:
+                            break
+                        
+                        if dialog.is_group:
+                            blacklisted = [g[0] for g in db.get_blacklisted_groups()]
+                            if str(dialog.id) in blacklisted:
+                                continue
+                            
+                            if group_blacklist.is_banned(str(dialog.id)):
+                                continue
+                            
+                            try:
+                                db.add_group(dialog.id, dialog.name, 
+                                            getattr(dialog.entity, 'username', None),
+                                            'group', 
+                                            getattr(dialog.entity, 'participants_count', 0), 
+                                            phone)
+                                
+                                await client.send_message(dialog.id, encrypted_txt)
+                                db.log_post(phone, dialog.id, dialog.name, 'success')
+                                groups_sent += 1
+                                group_blacklist.clear_banned(str(dialog.id))
+                                logger.info(f"✅ [{phone[-8:]}] أرسل لـ {dialog.name[:30]}")
+                                await asyncio.sleep(SETTINGS['interval'])
+                                
+                            except FloodWaitError as e:
+                                logger.warning(f"FloodWait: انتظار {e.seconds} ثانية")
+                                await asyncio.sleep(e.seconds)
+                            except Exception as e:
+                                error_msg = str(e)[:100]
+                                db.log_post(phone, dialog.id, dialog.name, 'failed', error_msg)
+                                if "banned" in error_msg.lower() or "can't write" in error_msg.lower():
+                                    group_blacklist.record_failure(str(dialog.id), error_msg)
+                                
+                except Exception as e:
+                    logger.error(f"خطأ في الحساب {phone}: {e}")
+                    
+            await asyncio.sleep(5)
             
         except Exception as e:
-            logger.error(f"💥 خطأ في حلقة النشر: {str(e)[:200]}")
+            logger.error(f"خطأ في النشر: {e}")
             await asyncio.sleep(10)
+
+# ===== استعادة الجلسات =====
+
+async def restore_sessions():
+    restored = 0
+    accounts = db.get_accounts()
+    logger.info(f"🔍 استعادة {len(accounts)} حساب...")
+    
+    for account in accounts:
+        try:
+            phone = account[0]
+            session_str = db.get_account_session(phone)
+            if not session_str:
+                continue
+            
+            client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+            await client.connect()
+            
+            if await client.is_user_authorized():
+                USER_CLIENTS[phone] = client
+                db.update_account_status(phone, 'active')
+                restored += 1
+                logger.success(f"✅ تم استعادة {phone}")
+            else:
+                db.update_account_status(phone, 'unauthorized')
+        except Exception as e:
+            logger.error(f"❌ فشل استعادة حساب: {e}")
+    
+    logger.info(f"✅ تم استعادة {restored} حساب")
+    return restored
 
 # ==================== الدالة الرئيسية ====================
 
@@ -1332,55 +1545,55 @@ async def main():
     print("🤖 بوت النشر الخارق - بدء التشغيل")
     print("=" * 60)
     
-    # 1. بدء خادم الويب أولاً
+    # 1. بدء خادم الويب أولاً (لحل مشكلة المنفذ)
     print(f"🌐 [MAIN] بدء تشغيل خادم الويب على المنفذ {PORT}...")
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
     print("✅ [MAIN] خيط خادم الويب بدأ.")
     
-    # 2. انتظار قصير للتأكد من تشغيل Flask
+    # 2. انتظار قصير للتأكد من فتح المنفذ
     await asyncio.sleep(2)
     print(f"✅ [MAIN] خادم الويب يجب أن يكون متاحاً الآن على http://0.0.0.0:{PORT}")
     
-    # 3. إنشاء البوت
+    # 3. استعادة الحسابات المحفوظة
+    await restore_sessions()
+    
+    # 4. بدء البوت
     bot = TelegramClient('bot_session', API_ID, API_HASH)
-    
-    # 4. تسجيل المعالجات
-    bot.add_event_handler(start_handler, events.NewMessage(pattern='/start'))
-    bot.add_event_handler(callback_handler, events.CallbackQuery())
-    
-    # 5. بدء البوت
-    print("🤖 [MAIN] بدء تشغيل بوت تيليجرام...")
     await bot.start(bot_token=BOT_TOKEN)
-    print("✅ [MAIN] بوت تيليجرام بدأ.")
     
-    # 6. تحميل الحسابات المحفوظة
-    accounts = db.get_accounts()
-    for phone, status, _, _, _ in accounts:
-        if status == 'active':
-            session_str = db.get_account_session(phone)
-            if session_str:
-                try:
-                    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-                    await client.start()
-                    USER_CLIENTS[phone] = client
-                    logger.success(f"✅ تم تحميل الحساب: {phone[-8:]}")
-                except Exception as e:
-                    logger.error(f"❌ فشل تحميل الحساب {phone[-8:]}: {str(e)[:50]}")
+    me = await bot.get_me()
+    print(f"✅ [MAIN] البوت متصل: @{me.username}")
+    print(f"👤 آيدي البوت: {me.id}")
+    
+    # 5. تسجيل المعالجات
+    @bot.on(events.NewMessage(pattern='/start'))
+    async def start_handler_event(e):
+        print(f"📩 استقبلت أمر /start من {e.sender_id}")
+        await start_handler(e)
+    
+    @bot.on(events.CallbackQuery())
+    async def callback_handler_event(e):
+        print(f"🖱 استقبلت ضغطة زر من {e.sender_id}")
+        await callback_handler(e)
+    
+    @bot.on(events.NewMessage)
+    async def text_handler_event(e):
+        if e.message.text and e.sender_id == ADMIN_ID:
+            print(f"💬 استقبلت رسالة: {e.message.text[:50]}...")
+            await text_handler(e)
     
     print("=" * 60)
     print("✅ البوت جاهز للعمل!")
-    print(f"🌐 الخادم: http://0.0.0.0:{PORT}")
-    print(f"🤖 البوت: @{bot.me.username}" if bot.me else "🤖 البوت: جاهز")
+    print(f"🌐 رابط الخادم: https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}")
     print("=" * 60)
     
-    # 7. إبقاء البوت يعمل
     await bot.run_until_disconnected()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("👋 تم إيقاف البوت يدوياً")
+        print("\n🛑 تم إيقاف البوت يدوياً")
     except Exception as e:
         print(f"💥 خطأ غير متوقع: {e}")
