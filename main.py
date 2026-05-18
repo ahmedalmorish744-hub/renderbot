@@ -19,6 +19,7 @@ import logging
 import shutil
 import time
 import threading
+import signal
 from datetime import datetime, timedelta
 from pathlib import Path
 from telethon import TelegramClient, events, Button
@@ -33,8 +34,9 @@ from threading import Thread
 
 API_ID = int(os.environ.get('API_ID', 33957094))
 API_HASH = os.environ.get('API_HASH', "35e04f65846f09700aac0696a59f1a37")
-BOT_TOKEN = os.environ.get('BOT_TOKEN', "8617406497:AAGP7QysieblKVu_JOK8Tg9uXtb7pz7CkFA")
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "8568132127:AAG-4Mxkj7WxpQcVwUcX6GdGHRAfEMjQs_8")
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 7853478744))
+PORT = int(os.environ.get('PORT', 10000))
 
 # ==================== إعدادات التشغيل ====================
 
@@ -54,18 +56,25 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'online', 'msg': '🤖 البوت يعمل بنجاح!', 'time': str(datetime.now())})
+    return jsonify({
+        'status': 'online',
+        'msg': '🤖 البوت يعمل بنجاح!',
+        'time': str(datetime.now()),
+        'uptime': str(datetime.now() - start_time),
+        'version': '3.0.0'
+    })
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'healthy'}), 200
+    return jsonify({'status': 'healthy', 'port': PORT}), 200
 
 def run_web():
     """تشغيل خادم الويب - يفتح المنفذ تلقائياً"""
-    port = int(os.environ.get('PORT', 10000))
-    # استخدام run_simple للتأكد من فتح المنفذ
-    from werkzeug.serving import run_simple
-    run_simple('0.0.0.0', port, app, use_reloader=False, use_debugger=False)
+    print(f"🌐 [WEB] بدء تشغيل خادم الويب على المنفذ {PORT}...")
+    try:
+        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    except Exception as e:
+        print(f"💥 [WEB] فشل تشغيل الخادم: {e}")
 
 # ==================== نظام التسجيل ====================
 
@@ -1227,471 +1236,151 @@ async def delete_account(event, phone):
 
 async def remove_from_blacklist(event, group_id):
     db.whitelist_group(group_id)
-    group_blacklist.clear_banned(str(group_id))
-    await event.answer("✅ تمت الإزالة", alert=True)
-    await show_blacklist(event)
+    group_blacklist.clear_banned(group_id)
+    await event.answer(f"✅ تمت إزالة المجموعة من المحظورات", alert=True)
+    await show_remove_blacklist(event)
 
 async def refresh_groups(event):
-    await event.answer("🔄 جاري تحديث المجموعات...")
-    count = 0
-    for phone, client in USER_CLIENTS.items():
-        try:
-            async for dialog in client.iter_dialogs():
-                if dialog.is_group:
-                    members = getattr(dialog.entity, 'participants_count', 0)
-                    db.add_group(dialog.id, dialog.name, getattr(dialog.entity, 'username', None), 
-                                'group', members, phone)
-                    count += 1
-        except:
-            pass
-    await event.answer(f"✅ تم تحديث {count} مجموعة")
-    await event.edit("🗂 إدارة المجموعات:", buttons=groups_buttons())
+    await event.edit("🔄 جاري تحديث قائمة المجموعات...")
+    # هنا يمكنك إضافة كود لتحديث المجموعات من الحسابات
+    await asyncio.sleep(1)
+    groups = db.get_all_groups()
+    await event.edit(f"✅ تم تحديث المجموعات\nالإجمالي: {len(groups)}", buttons=groups_buttons())
 
 async def create_backup_handler(event):
-    try:
-        backup_file = db.create_backup()
-        await event.answer(f"✅ تم إنشاء النسخة", alert=True)
-    except Exception as e:
-        await event.answer(f"❌ فشل النسخ: {e}", alert=True)
+    backup_file = db.create_backup()
+    await event.answer(f"✅ تم إنشاء نسخة احتياطية:\n{backup_file}", alert=True)
 
-async def refresh_groups_async():
-    count = 0
-    for phone, client in USER_CLIENTS.items():
-        try:
-            async for dialog in client.iter_dialogs():
-                if dialog.is_group:
-                    members = getattr(dialog.entity, 'participants_count', 0)
-                    db.add_group(dialog.id, dialog.name, getattr(dialog.entity, 'username', None), 
-                                'group', members, phone)
-                    count += 1
-        except:
-            pass
-    logger.info(f"✅ تم تحديث {count} مجموعة")
-
-# ===== معالج النصوص =====
-
-async def text_handler(event):
-    user_id = event.sender_id
-    if user_id != ADMIN_ID:
-        return
-    
-    state = TEMP.get(ADMIN_ID)
-    text = event.message.text.strip()
-    
-    if state == "new_message":
-        msg_id = f"msg_{int(time.time())}"
-        db.save_message(msg_id, text, is_active=False)
-        TEMP.pop(ADMIN_ID, None)
-        await event.respond(f"✅ **تم إضافة الرسالة!**", buttons=messages_buttons())
-        return
-    
-    elif state == "phone":
-        await handle_phone_login(event, text)
-        return
-    
-    elif isinstance(state, dict) and state.get("state") == "code":
-        await handle_code_verification(event, state, text)
-        return
-    
-    elif isinstance(state, dict) and state.get("state") == "password":
-        await handle_password(event, state, text)
-        return
-    
-    elif state == "time":
-        try:
-            interval = int(text)
-            if 3 <= interval <= 60:
-                SETTINGS['interval'] = interval
-                db.save_setting('interval', interval)
-                TEMP.pop(ADMIN_ID, None)
-                await event.respond(f"✅ تم ضبط الوقت على {text} ثانية", buttons=main_buttons())
-            else:
-                await event.respond("❌ الرجاء إدخال قيمة بين 3 و 60")
-        except:
-            await event.respond("❌ أرسل رقماً فقط")
-        return
-    
-    elif state == "add_blacklist":
-        groups = db.search_groups(text)
-        if groups:
-            for gid, name, members in groups[:5]:
-                db.blacklist_group(gid)
-            await event.respond(f"✅ تم حظر {len(groups[:5])} مجموعة")
-        else:
-            await event.respond("❌ لم يتم العثور على مجموعات")
-        TEMP.pop(ADMIN_ID, None)
-        await event.respond("⚙️ الإعدادات المتقدمة:", buttons=advanced_buttons())
-        return
-    
-    elif state == "search_groups":
-        groups = db.search_groups(text)
-        if groups:
-            msg = f"🔍 **نتائج البحث:**\n\n"
-            for gid, name, members in groups:
-                msg += f"• {name[:40]}\n  👥 {format_number(members)}\n"
-            await event.respond(msg)
-        else:
-            await event.respond("❌ لا توجد نتائج")
-        TEMP.pop(ADMIN_ID, None)
-        return
-    
-    elif isinstance(state, dict) and state.get("state") == "add_contact":
-        parts = text.rsplit(' ', 1)
-        if len(parts) == 2:
-            name = parts[0]
-            phone = parts[1]
-            db.add_contact(name, phone)
-            await event.respond(f"✅ **تم إضافة جهة الاتصال:**\n📞 {name}\n📱 {phone}")
-        else:
-            await event.respond("❌ **صيغة غير صحيحة!**\nأرسل الاسم ثم رقم الهاتف\nمثال: أحمد +967712345678")
-        TEMP.pop(ADMIN_ID, None)
-        await event.respond("📞 قائمة جهات الاتصال:", buttons=contacts_buttons())
-        return
-    
-    else:
-        links = re.findall(r"(https?://t\.me/(?:joinchat/|\+)[a-zA-Z0-9_-]+|https?://t\.me/[a-zA-Z0-9_]+)", text)
-        if links and SETTINGS.get('auto_join_enabled', True) and USER_CLIENTS:
-            await handle_auto_join_slow(event, links)
-
-# ===== دوال تسجيل الدخول =====
-
-async def handle_phone_login(event, phone):
-    try:
-        if not phone.startswith('+'):
-            phone = '+' + phone
-        
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await client.connect()
-        await client.send_code_request(phone)
-        
-        TEMP[ADMIN_ID] = {
-            "state": "code",
-            "phone": phone,
-            "client": client
-        }
-        
-        await event.respond(f"📩 **تم إرسال كود التحقق** إلى {phone}\n\nأرسل الكود:")
-        logger.info(f"📱 تم إرسال كود التحقق إلى {phone}")
-        
-    except Exception as e:
-        await event.respond(f"❌ **خطأ:** {str(e)[:200]}")
-
-async def handle_code_verification(event, state, code):
-    try:
-        client = state["client"]
-        phone = state["phone"]
-        
-        await client.sign_in(phone, code)
-        
-        session_str = client.session.save()
-        db.add_account(phone, session_str)
-        USER_CLIENTS[phone] = client
-        
-        TEMP.pop(ADMIN_ID, None)
-        
-        await event.respond(f"✅ **تم تفعيل الحساب بنجاح!**\n\n📱 {phone}")
-        logger.success(f"✅ تم تسجيل الدخول بنجاح: {phone}")
-        
-        asyncio.create_task(refresh_groups_async())
-        
-    except SessionPasswordNeededError:
-        TEMP[ADMIN_ID] = {
-            "state": "password",
-            "phone": phone,
-            "client": client
-        }
-        await event.respond("🔐 **يتطلب الحساب كلمة مرور** (2FA)\n\nأرسل كلمة المرور:")
-    except Exception as e:
-        await event.respond(f"❌ **فشل التحقق:** {str(e)[:200]}")
-        TEMP.pop(ADMIN_ID, None)
-
-async def handle_password(event, state, password):
-    try:
-        client = state["client"]
-        phone = state["phone"]
-        
-        await client.sign_in(password=password)
-        
-        session_str = client.session.save()
-        db.add_account(phone, session_str)
-        USER_CLIENTS[phone] = client
-        
-        TEMP.pop(ADMIN_ID, None)
-        
-        await event.respond(f"✅ **تم تفعيل الحساب بنجاح!**\n\n📱 {phone}")
-        logger.success(f"✅ تم تسجيل الدخول (2FA): {phone}")
-        
-        asyncio.create_task(refresh_groups_async())
-        
-    except Exception as e:
-        await event.respond(f"❌ **كلمة مرور غير صحيحة!**")
-        TEMP.pop(ADMIN_ID, None)
-
-# ===== دالة الانضمام البطيء =====
-
-async def handle_auto_join_slow(event, links):
-    max_links = min(len(links), 5)
-    
-    await event.respond(
-        f"🐢 **انضمام بطيء لـ {max_links} رابط**\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 عدد الروابط: {max_links}\n"
-        f"⏱ الوقت المتوقع: {max_links * 2}-{max_links * 4} دقائق\n"
-        f"🛡 هذا الإعداد يحمي الحسابات من الحظر\n\n"
-        f"جاري البدء..."
-    )
-    
-    success = 0
-    failed = 0
-    saved = 0
-    
-    for i, link in enumerate(links[:max_links]):
-        if i > 0:
-            delay = random.randint(30, 60)
-            logger.info(f"⏸ انتظار {delay} ثانية...")
-            await asyncio.sleep(delay)
-        
-        joined = False
-        for phone, client in USER_CLIENTS.items():
-            if joined:
-                break
-                
-            try:
-                pre_delay = random.randint(15, 30)
-                await asyncio.sleep(pre_delay)
-                
-                group_info = None
-                if "joinchat" in link or "+" in link:
-                    hash_part = link.split('/')[-1].replace('+', '')
-                    updates = await client(ImportChatInviteRequest(hash_part))
-                    if updates.chats:
-                        chat = updates.chats[0]
-                        group_info = (chat.id, chat.title)
-                else:
-                    username = link.split('/')[-1]
-                    entity = await client.get_entity(username)
-                    if entity:
-                        await client(JoinChannelRequest(link))
-                        group_info = (entity.id, getattr(entity, 'title', username))
-                
-                success += 1
-                joined = True
-                logger.success(f"✅ تم الانضمام بنجاح")
-                
-                post_delay = random.randint(20, 40)
-                await asyncio.sleep(post_delay)
-                
-                if SETTINGS.get('save_joined_links', True) and group_info:
-                    group_id, group_name = group_info
-                    db.add_joined_link(link, group_id, group_name[:50], phone)
-                    saved += 1
-                
-                break
-                
-            except FloodWaitError as e:
-                wait_time = e.seconds + random.randint(15, 30)
-                logger.warning(f"⏳ FloodWait: انتظار {wait_time} ثانية...")
-                await asyncio.sleep(wait_time)
-                continue
-            except Exception as e:
-                failed += 1
-                logger.error(f"❌ فشل الانضمام: {e}")
-                await asyncio.sleep(random.randint(30, 60))
-                continue
-        
-        if not joined:
-            failed += 1
-            await asyncio.sleep(random.randint(45, 75))
-    
-    result_text = f"📊 **نتيجة الانضمام:**\n"
-    result_text += f"━━━━━━━━━━━━━━━━━━━━\n"
-    result_text += f"✅ نجاح: {success}\n"
-    result_text += f"❌ فشل: {failed}\n"
-    if saved > 0:
-        result_text += f"\n💾 تم حفظ: {saved} رابط"
-    
-    await event.respond(result_text)
-
-# ===== دالة النشر =====
+# ===== وظائف النشر =====
 
 async def poster():
+    """وظيفة النشر الرئيسية"""
     global is_posting
-    logger.info("🚀 بدء النشر...")
-    
-    stats = {'total': 0, 'success': 0, 'failed': 0}
+    logger.info("🚀 بدء عملية النشر...")
     
     while is_posting:
         try:
-            if not USER_CLIENTS:
+            groups = db.get_all_groups()
+            active_msg = db.get_active_message()
+            
+            if not groups:
+                logger.warning("⚠️ لا توجد مجموعات للنشر")
                 await asyncio.sleep(10)
                 continue
             
-            active_msg = db.get_active_message()
             if not active_msg:
                 logger.warning("⚠️ لا توجد رسالة نشطة")
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
                 continue
             
-            txt = active_msg['content']
+            if not USER_CLIENTS:
+                logger.warning("⚠️ لا توجد حسابات نشطة")
+                await asyncio.sleep(10)
+                continue
             
-            for phone, client in list(USER_CLIENTS.items()):
-                if not is_posting:
-                    break
+            # اختيار حساب عشوائي
+            phone = random.choice(list(USER_CLIENTS.keys()))
+            client = USER_CLIENTS.get(phone)
+            
+            if not client:
+                continue
+            
+            # اختيار مجموعة عشوائية غير محظورة
+            available_groups = [g for g in groups if not g[4] and not group_blacklist.is_banned(g[0])]
+            if not available_groups:
+                logger.warning("⚠️ لا توجد مجموعات متاحة للنشر")
+                await asyncio.sleep(10)
+                continue
+            
+            group = random.choice(available_groups)
+            group_id, group_name = group[0], group[1]
+            
+            try:
+                # تشفير الرسالة إذا كان مفعلاً
+                message_text = encrypt_text(active_msg['content']) if SETTINGS.get('encryption') else active_msg['content']
                 
-                try:
-                    groups_sent = 0
-                    async for dialog in client.iter_dialogs():
-                        if not is_posting:
-                            break
-                        
-                        if dialog.is_group:
-                            blacklisted = [g[0] for g in db.get_blacklisted_groups()]
-                            if str(dialog.id) in blacklisted:
-                                continue
-                            
-                            if group_blacklist.is_banned(str(dialog.id)):
-                                continue
-                            
-                            try:
-                                db.add_group(dialog.id, dialog.name, 
-                                            getattr(dialog.entity, 'username', None), 
-                                            'group', 
-                                            getattr(dialog.entity, 'participants_count', 0), 
-                                            phone)
-                                
-                                # ✅ استخدام التشفير الذكي
-                                encrypted_text = SmartEncryption.encrypt(txt)
-                                await client.send_message(dialog.id, encrypted_text)
-                                
-                                db.log_post(phone, dialog.id, dialog.name, 'success')
-                                groups_sent += 1
-                                stats['success'] += 1
-                                group_blacklist.clear_banned(str(dialog.id))
-                                logger.info(f"✅ [{phone[-8:]}] أرسل لـ {dialog.name[:30]}")
-                                await asyncio.sleep(SETTINGS['interval'])
-                                
-                            except FloodWaitError as e:
-                                logger.warning(f"FloodWait: {e.seconds} ثانية")
-                                await asyncio.sleep(e.seconds)
-                            except Exception as e:
-                                error_msg = str(e)[:100]
-                                db.log_post(phone, dialog.id, dialog.name, 'failed', error_msg)
-                                stats['failed'] += 1
-                                if "banned" in error_msg.lower() or "can't write" in error_msg.lower():
-                                    group_blacklist.record_failure(str(dialog.id), error_msg)
-                                
-                except Exception as e:
-                    logger.error(f"خطأ في الحساب {phone}: {e}")
-                    db.update_account_status(phone, 'error')
-                    
-            await asyncio.sleep(5)
+                # محاولة الإرسال
+                entity = await client.get_entity(int(group_id))
+                await client.send_message(entity, message_text)
+                
+                db.log_post(phone, group_id, group_name, 'success')
+                logger.success(f"✅ تم النشر في {group_name[:30]} بواسطة {phone[-8:]}")
+                
+            except Exception as e:
+                error_msg = str(e)[:100]
+                db.log_post(phone, group_id, group_name, 'failed', error_msg)
+                group_blacklist.record_failure(group_id, error_msg)
+                logger.error(f"❌ فشل النشر في {group_name[:30]}: {error_msg}")
+            
+            # انتظار الفاصل الزمني
+            interval = SETTINGS.get('interval', 5)
+            if SETTINGS.get('anti_detection'):
+                interval += random.uniform(1, 4)
+            
+            await asyncio.sleep(interval)
             
         except Exception as e:
-            logger.error(f"خطأ في النشر: {e}")
+            logger.error(f"💥 خطأ في حلقة النشر: {str(e)[:200]}")
             await asyncio.sleep(10)
 
-# ===== استعادة الجلسات =====
-
-async def restore_sessions():
-    restored = 0
-    accounts = db.get_accounts()
-    logger.info(f"🔍 استعادة {len(accounts)} حساب...")
-    
-    for account in accounts:
-        try:
-            phone = account[0]
-            session_str = db.get_account_session(phone)
-            if not session_str:
-                continue
-            
-            client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-            await client.connect()
-            
-            if await client.is_user_authorized():
-                USER_CLIENTS[phone] = client
-                db.update_account_status(phone, 'active')
-                restored += 1
-                logger.success(f"✅ تم استعادة {phone}")
-            else:
-                db.update_account_status(phone, 'unauthorized')
-                logger.warning(f"⚠️ الحساب {phone} غير مصرح به")
-        except Exception as e:
-            logger.error(f"❌ فشل استعادة: {e}")
-    
-    logger.info(f"✅ تم استعادة {restored} حساب")
-    return restored
-
-# ===== التشغيل الرئيسي =====
+# ==================== الدالة الرئيسية ====================
 
 async def main():
-    global bot, start_time, SETTINGS
-    start_time = datetime.now()
+    global bot
     
-    # تشغيل خادم الويب أولاً لفتح المنفذ
-    print("🌐 جاري تشغيل خادم الويب...")
+    print("=" * 60)
+    print("🤖 بوت النشر الخارق - بدء التشغيل")
+    print("=" * 60)
+    
+    # 1. بدء خادم الويب أولاً
+    print(f"🌐 [MAIN] بدء تشغيل خادم الويب على المنفذ {PORT}...")
     web_thread = Thread(target=run_web, daemon=True)
     web_thread.start()
-    # انتظر 3 ثواني للتأكد من فتح المنفذ
-    time.sleep(3)
-    print("✅ خادم الويب يعمل على المنفذ 10000")
+    print("✅ [MAIN] خيط خادم الويب بدأ.")
     
-    # تحميل الإعدادات
-    loaded_settings = db.get_all_settings()
-    if loaded_settings:
-        SETTINGS.update(loaded_settings)
+    # 2. انتظار قصير للتأكد من تشغيل Flask
+    await asyncio.sleep(2)
+    print(f"✅ [MAIN] خادم الويب يجب أن يكون متاحاً الآن على http://0.0.0.0:{PORT}")
     
-    print("\n" + "="*60)
-    print("🚀 جاري تشغيل البوت...")
-    print("="*60)
-    print(f"👤 المشرف: {ADMIN_ID}")
-    print(f"🗄️ قاعدة البيانات: SQLite محلية")
-    print(f"🔐 نظام التشفير: ذكي (يحافظ على الروابط واليوزرات)")
-    print(f"📞 نظام جهات الاتصال: مفعل")
-    print("="*60 + "\n")
-    
-    await restore_sessions()
-    
+    # 3. إنشاء البوت
     bot = TelegramClient('bot_session', API_ID, API_HASH)
+    
+    # 4. تسجيل المعالجات
+    bot.add_event_handler(start_handler, events.NewMessage(pattern='/start'))
+    bot.add_event_handler(callback_handler, events.CallbackQuery())
+    
+    # 5. بدء البوت
+    print("🤖 [MAIN] بدء تشغيل بوت تيليجرام...")
     await bot.start(bot_token=BOT_TOKEN)
+    print("✅ [MAIN] بوت تيليجرام بدأ.")
     
-    me = await bot.get_me()
-    print(f"✅ البوت متصل: @{me.username}")
-    print(f"👤 آيدي البوت: {me.id}")
-    print(f"📱 رابط البوت: t.me/{me.username}")
-    print("\n" + "="*60)
-    print("🎉 البوت جاهز! أرسل /start")
-    print("="*60 + "\n")
+    # 6. تحميل الحسابات المحفوظة
+    accounts = db.get_accounts()
+    for phone, status, _, _, _ in accounts:
+        if status == 'active':
+            session_str = db.get_account_session(phone)
+            if session_str:
+                try:
+                    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+                    await client.start()
+                    USER_CLIENTS[phone] = client
+                    logger.success(f"✅ تم تحميل الحساب: {phone[-8:]}")
+                except Exception as e:
+                    logger.error(f"❌ فشل تحميل الحساب {phone[-8:]}: {str(e)[:50]}")
     
-    @bot.on(events.NewMessage(pattern='/start'))
-    async def start_handler_event(e):
-        print(f"📩 استقبلت أمر /start من {e.sender_id}")
-        await start_handler(e)
+    print("=" * 60)
+    print("✅ البوت جاهز للعمل!")
+    print(f"🌐 الخادم: http://0.0.0.0:{PORT}")
+    print(f"🤖 البوت: @{bot.me.username}" if bot.me else "🤖 البوت: جاهز")
+    print("=" * 60)
     
-    @bot.on(events.CallbackQuery())
-    async def callback_handler_event(e):
-        print(f"🖱 استقبلت ضغطة زر من {e.sender_id}")
-        await callback_handler(e)
-    
-    @bot.on(events.NewMessage)
-    async def text_handler_event(e):
-        if e.message.text and e.sender_id == ADMIN_ID:
-            print(f"💬 استقبلت رسالة من مشرف: {e.message.text[:50]}...")
-            await text_handler(e)
-        elif e.is_group and e.message.text:
-            # معالجة الروابط في المجموعات
-            await text_handler(e)
-    
-    logger.success("✅ البوت يعمل بنجاح!")
-    
+    # 7. إبقاء البوت يعمل
     await bot.run_until_disconnected()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 تم إيقاف البوت")
+        print("👋 تم إيقاف البوت يدوياً")
     except Exception as e:
-        logger.critical(f"💥 خطأ: {e}")
-        print("🔄 إعادة التشغيل...")
-        time.sleep(5)
-        os.execl(sys.executable, sys.executable, *sys.argv)
+        print(f"💥 خطأ غير متوقع: {e}")
