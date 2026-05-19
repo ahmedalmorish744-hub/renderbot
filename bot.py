@@ -68,9 +68,10 @@ def health():
     return jsonify({'status': 'healthy'}), 200
 
 def run_web():
-    """تشغيل خادم الويب - يفتح المنفذ تلقائياً"""
+    """تشغيل خادم الويب - يتوافق مع Render"""
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    # هذا التعديل يضمن أن Flask يعمل على المنفذ الصحيح
+    app.run(host='0.0.0.0', port=port)
 
 # ==================== نظام التسجيل ====================
 
