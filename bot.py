@@ -33,7 +33,7 @@ from threading import Thread
 
 API_ID = int(os.environ.get('API_ID', 33957094))
 API_HASH = os.environ.get('API_HASH', "35e04f65846f09700aac0696a59f1a37")
-BOT_TOKEN = os.environ.get('BOT_TOKEN', "8568132127:AAG-4Mxkj7WxpQcVwUcX6GdGHRAfEMjQs_8")
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "8617406497:AAHpn1l5I_0By8480YCeJKKrn7pcrBndtHc")
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 7853478744))
 
 # ==================== إعدادات التشغيل ====================
