@@ -1,2 +1,3 @@
 telethon
 Flask
+pymongo[srv]
