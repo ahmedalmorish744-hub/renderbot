@@ -1,3 +1,2 @@
 telethon
 Flask
-sqlite3
